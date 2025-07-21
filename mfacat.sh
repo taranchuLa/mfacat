@@ -13,6 +13,7 @@ OP_ITEM=""
 ACCESS_KEY_ID=""
 SECRET_ACCESS_KEY=""
 CONFIG_FILE="$HOME/.aws/mfacat"
+NO_CACHE=false
 
 # Function to show usage
 show_usage() {
@@ -24,12 +25,29 @@ show_usage() {
     echo "  -t, --token TOKEN         6-digit MFA token (required if --op is not specified)"
     echo "  -s, --serial_number SN    MFA serial number"
     echo "  --op ITEM_NAME           1Password item name to get OTP from"
+    echo "  --no-cache               Ignore cached credentials and get new ones"
     echo "  -h, --help               Show this help message"
+    echo ""
+    echo "Token Management:"
+echo "  When --token is specified without a value, the script will:"
+echo "  1. Check for valid cached credentials first (if not expired, use them)"
+echo "  2. If no valid cached credentials, show macOS dialog to enter MFA token (macOS only)"
+echo "  3. Try to read a cached token from ~/.aws/mfacat_tokens (fallback)"
+echo "  4. If no cached token exists and running interactively, prompt for input"
+echo "  5. If no cached token exists and running in credential_process, exit with error"
+echo "  6. Save the entered token to the cache file for future use"
+    echo ""
+    echo "macOS Dialog:"
+echo "  On macOS, a system dialog will appear to enter the MFA token."
+echo "  The dialog is only shown when no valid cached credentials exist."
+echo "  The token is temporarily stored in the macOS Keychain for the current session."
     echo ""
     echo "Examples:"
     echo "  $0 --profile myprofile --token 123456 --serial_number arn:aws:iam::123456789012:mfa/user"
     echo "  $0 --profile myprofile --op \"AWS | MyAccount\" --serial_number arn:aws:iam::123456789012:mfa/user"
     echo "  $0 --access-key-id AKIA... --secret-access-key ... --token 123456 --serial_number arn:aws:iam::123456789012:mfa/user"
+    echo "  $0 --profile myprofile --token 123456 --serial_number arn:aws:iam::123456789012:mfa/user --no-cache"
+    echo "  $0 --profile myprofile --token --serial_number arn:aws:iam::123456789012:mfa/user"
 }
 
 # Function to check if command exists
@@ -85,6 +103,130 @@ get_1password_otp() {
     fi
     
     op item get "$item_name" --otp
+}
+
+# Function to read token from file
+read_token_from_file() {
+    local profile="$1"
+    
+    if [[ ! -f "$TOKEN_FILE" ]]; then
+        return 1
+    fi
+    
+    # Simple TOML parser for token file
+    local in_profile=false
+    local token=""
+    
+    while IFS= read -r line; do
+        line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        
+        # Check if we're entering the profile section
+        if [[ "$line" == "[$profile]" ]]; then
+            in_profile=true
+            continue
+        fi
+        
+        # Check if we're leaving the profile section
+        if [[ "$line" =~ ^\[.*\]$ ]] && [[ "$in_profile" == true ]]; then
+            break
+        fi
+        
+        # Parse token within the profile section
+        if [[ "$in_profile" == true ]] && [[ "$line" =~ ^[^#]*= ]]; then
+            key=$(echo "$line" | cut -d'=' -f1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            value=$(echo "$line" | cut -d'=' -f2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sed 's/^"//;s/"$//')
+            
+            if [[ "$key" == "token" ]]; then
+                token="$value"
+            fi
+        fi
+    done < "$TOKEN_FILE"
+    
+    if [[ -n "$token" ]]; then
+        echo "$token"
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Function to write token to file
+write_token_to_file() {
+    local profile="$1"
+    local token="$2"
+    
+    # Create directory if it doesn't exist
+    mkdir -p "$(dirname "$TOKEN_FILE")"
+    
+    # Read existing content
+    local temp_file=$(mktemp)
+    local profile_found=false
+    
+    if [[ -f "$TOKEN_FILE" ]]; then
+        while IFS= read -r line; do
+            if [[ "$line" == "[$profile]" ]]; then
+                profile_found=true
+                echo "$line" >> "$temp_file"
+                echo "token = \"$token\"" >> "$temp_file"
+                # Skip existing profile content
+                while IFS= read -r next_line; do
+                    if [[ "$next_line" =~ ^\[.*\]$ ]]; then
+                        echo "$next_line" >> "$temp_file"
+                        break
+                    fi
+                done
+            elif [[ "$profile_found" == true ]] && [[ "$line" =~ ^\[.*\]$ ]]; then
+                profile_found=false
+                echo "$line" >> "$temp_file"
+            elif [[ "$profile_found" == false ]]; then
+                echo "$line" >> "$temp_file"
+            fi
+        done < "$TOKEN_FILE"
+    fi
+    
+    # Add profile if not found
+    if [[ "$profile_found" == false ]]; then
+        if [[ -s "$temp_file" ]]; then
+            echo "" >> "$temp_file"
+        fi
+        echo "[$profile]" >> "$temp_file"
+        echo "token = \"$token\"" >> "$temp_file"
+    fi
+    
+    mv "$temp_file" "$TOKEN_FILE"
+}
+
+# Function to show macOS authentication dialog and get token
+get_token_via_dialog() {
+    local profile="$1"
+    
+    # Always clear the keychain to force dialog display
+    if command_exists security; then
+        security delete-generic-password -s "mfacat-token-$profile" >/dev/null 2>&1 || true
+    fi
+    
+    # Show macOS dialog to get token
+    if command_exists osascript; then
+        local dialog_result=$(osascript -e 'display dialog "Enter 6-digit MFA token:" default answer "" with title "MFA Token Required" with icon note' 2>/dev/null)
+        
+        # Check if user clicked Cancel
+        if echo "$dialog_result" | grep -q "button returned:Cancel"; then
+            return 1
+        fi
+        
+        local token=$(echo "$dialog_result" | sed -n 's/.*text returned:\([^,]*\).*/\1/p' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr -d '\n\r')
+        
+        if [[ -n "$token" && "$token" =~ ^[0-9]{6}$ ]]; then
+            # Save token to Keychain (for this session only)
+            if command_exists security; then
+                echo "$token" | security add-generic-password -s "mfacat-token-$profile" -a "$USER" -w - 2>/dev/null || true
+            fi
+            echo "$token"
+            return 0
+        fi
+    fi
+    
+    return 1
 }
 
 # Function to read TOML file
@@ -208,6 +350,7 @@ write_toml() {
 }
 
 # Parse command line arguments
+TOKEN_SPECIFIED=false
 while [[ $# -gt 0 ]]; do
     case $1 in
         -p|--profile)
@@ -223,8 +366,14 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         -t|--token)
-            TOKEN="$2"
-            shift 2
+            if [[ -n "$2" && "$2" != --* ]]; then
+                TOKEN="$2"
+                shift 2
+            else
+                TOKEN=""
+                shift 1
+            fi
+            TOKEN_SPECIFIED=true
             ;;
         -s|--serial_number)
             SERIAL_NUMBER="$2"
@@ -233,6 +382,10 @@ while [[ $# -gt 0 ]]; do
         --op)
             OP_ITEM="$2"
             shift 2
+            ;;
+        --no-cache)
+            NO_CACHE=true
+            shift 1
             ;;
         -h|--help)
             show_usage
@@ -253,14 +406,60 @@ if [[ -z "$SERIAL_NUMBER" ]]; then
     exit 1
 fi
 
-if [[ -z "$PROFILE" ]]; then
-    echo "Error: --profile is required"
+# Profile is required only if access key and secret key are not provided
+if [[ -z "$ACCESS_KEY_ID" && -z "$SECRET_ACCESS_KEY" && -z "$PROFILE" ]]; then
+    echo "Error: --profile is required when --access-key-id and --secret-access-key are not specified"
     show_usage
     exit 1
 fi
 
+# If --token was specified but value is empty, check for cached credentials first
+if [[ "$TOKEN_SPECIFIED" == true && -z "$TOKEN" ]]; then
+    # Check if we have valid cached credentials first
+    if [[ "$NO_CACHE" != true ]] && read_toml "$CONFIG_FILE" "$PROFILE"; then
+        if ! is_expired "$CACHED_EXPIRATION"; then
+            # Use cached credentials without prompting for token
+            credentials=$(cat <<EOF
+{
+  "Version": 1,
+  "AccessKeyId": "$CACHED_ACCESS_KEY_ID",
+  "SecretAccessKey": "$CACHED_SECRET_ACCESS_KEY",
+  "SessionToken": "$CACHED_SESSION_TOKEN",
+  "Expiration": "$CACHED_EXPIRATION"
+}
+EOF
+)
+            echo "$credentials" | jq '.'
+            exit 0
+        fi
+    fi
+    
+    # If no valid cached credentials, prompt for token
+    dialog_token=$(get_token_via_dialog "$PROFILE")
+    if [[ -n "$dialog_token" && "$dialog_token" != "-" ]]; then
+        TOKEN="$dialog_token"
+    else
+        # Fallback to file-based token if dialog fails
+        if read_token_from_file "$PROFILE"; then
+            TOKEN=$(read_token_from_file "$PROFILE")
+        else
+            # Check if we're running in credential_process mode (no TTY available)
+            if [[ ! -t 0 ]]; then
+                echo "Error: No token provided and no cached token found. Please run manually first to cache a token." >&2
+                exit 1
+            fi
+            echo -n "Enter 6-digit MFA token: "
+            read -r TOKEN < /dev/tty
+            echo ""
+            # Save token to file for future use
+            write_token_to_file "$PROFILE" "$TOKEN"
+        fi
+    fi
+fi
+
 # Check if either --token or --op is specified
-if [[ -z "$TOKEN" && -z "$OP_ITEM" ]]; then
+# Note: --token can be specified without a value to trigger dialog/cache check
+if [[ "$TOKEN_SPECIFIED" != true && -z "$OP_ITEM" ]]; then
     echo "Error: Either --token or --op is required"
     show_usage
     exit 1
@@ -273,7 +472,7 @@ if [[ -n "$TOKEN" && -n "$OP_ITEM" ]]; then
     exit 1
 fi
 
-# Validate token format (6 digits only)
+# Validate token format (6 digits only) - only if TOKEN has a value
 if [[ -n "$TOKEN" ]]; then
     if ! [[ "$TOKEN" =~ ^[0-9]{6}$ ]]; then
         echo "Error: --token must be exactly 6 digits"
@@ -299,8 +498,8 @@ fi
 check_jq
 check_aws_cli
 
-# Check if we have cached credentials
-if read_toml "$CONFIG_FILE" "$PROFILE"; then
+# Check if we have cached credentials (unless --no-cache is specified)
+if [[ "$NO_CACHE" != true ]] && read_toml "$CONFIG_FILE" "$PROFILE"; then
     if ! is_expired "$CACHED_EXPIRATION"; then
         # Use cached credentials
         credentials=$(cat <<EOF
