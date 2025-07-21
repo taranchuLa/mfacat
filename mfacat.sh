@@ -6,17 +6,21 @@
 set -e
 
 # Default values
-PROFILE="default"
+PROFILE=""
 TOKEN=""
 SERIAL_NUMBER=""
 OP_ITEM=""
+ACCESS_KEY_ID=""
+SECRET_ACCESS_KEY=""
 CONFIG_FILE="$HOME/.aws/mfacat"
 
 # Function to show usage
 show_usage() {
     echo "Usage: $0 [OPTIONS]"
     echo "Options:"
-    echo "  -p, --profile PROFILE     AWS profile to use (default: default)"
+    echo "  -p, --profile PROFILE     AWS profile to use (required)"
+    echo "  --access-key-id KEY       AWS Access Key ID (overrides profile)"
+    echo "  --secret-access-key KEY   AWS Secret Access Key (overrides profile)"
     echo "  -t, --token TOKEN         6-digit MFA token (required if --op is not specified)"
     echo "  -s, --serial_number SN    MFA serial number"
     echo "  --op ITEM_NAME           1Password item name to get OTP from"
@@ -25,6 +29,7 @@ show_usage() {
     echo "Examples:"
     echo "  $0 --profile myprofile --token 123456 --serial_number arn:aws:iam::123456789012:mfa/user"
     echo "  $0 --profile myprofile --op \"AWS | MyAccount\" --serial_number arn:aws:iam::123456789012:mfa/user"
+    echo "  $0 --access-key-id AKIA... --secret-access-key ... --token 123456 --serial_number arn:aws:iam::123456789012:mfa/user"
 }
 
 # Function to check if command exists
@@ -209,6 +214,14 @@ while [[ $# -gt 0 ]]; do
             PROFILE="$2"
             shift 2
             ;;
+        --access-key-id)
+            ACCESS_KEY_ID="$2"
+            shift 2
+            ;;
+        --secret-access-key)
+            SECRET_ACCESS_KEY="$2"
+            shift 2
+            ;;
         -t|--token)
             TOKEN="$2"
             shift 2
@@ -240,6 +253,12 @@ if [[ -z "$SERIAL_NUMBER" ]]; then
     exit 1
 fi
 
+if [[ -z "$PROFILE" ]]; then
+    echo "Error: --profile is required"
+    show_usage
+    exit 1
+fi
+
 # Check if either --token or --op is specified
 if [[ -z "$TOKEN" && -z "$OP_ITEM" ]]; then
     echo "Error: Either --token or --op is required"
@@ -261,6 +280,19 @@ if [[ -n "$TOKEN" ]]; then
         show_usage
         exit 1
     fi
+fi
+
+# Validate that both access key and secret key are provided if one is specified
+if [[ -n "$ACCESS_KEY_ID" && -z "$SECRET_ACCESS_KEY" ]]; then
+    echo "Error: --secret-access-key is required when --access-key-id is specified"
+    show_usage
+    exit 1
+fi
+
+if [[ -z "$ACCESS_KEY_ID" && -n "$SECRET_ACCESS_KEY" ]]; then
+    echo "Error: --access-key-id is required when --secret-access-key is specified"
+    show_usage
+    exit 1
 fi
 
 # Check dependencies
@@ -291,13 +323,20 @@ if [[ -n "$OP_ITEM" ]]; then
     TOKEN=$(get_1password_otp "$OP_ITEM")
 fi
 
+# Build AWS CLI command
+aws_cmd="aws sts get-session-token --duration-seconds 3600 --token-code \"$TOKEN\" --serial-number \"$SERIAL_NUMBER\" --output json"
+
+# Add profile or credentials based on what's provided
+if [[ -n "$ACCESS_KEY_ID" && -n "$SECRET_ACCESS_KEY" ]]; then
+    # Use provided credentials
+    aws_cmd="AWS_ACCESS_KEY_ID=\"$ACCESS_KEY_ID\" AWS_SECRET_ACCESS_KEY=\"$SECRET_ACCESS_KEY\" $aws_cmd"
+else
+    # Use profile
+    aws_cmd="$aws_cmd --profile \"$PROFILE\""
+fi
+
 # Get session token from AWS
-response=$(aws sts get-session-token \
-    --profile "$PROFILE" \
-    --duration-seconds 3600 \
-    --token-code "$TOKEN" \
-    --serial-number "$SERIAL_NUMBER" \
-    --output json)
+response=$(eval $aws_cmd)
 
 # Extract credentials
 access_key_id=$(echo "$response" | jq -r '.Credentials.AccessKeyId')

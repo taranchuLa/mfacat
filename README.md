@@ -15,7 +15,6 @@ AWS MFAトークン管理ツールです。AWS CLIでMFA（多要素認証）を
 ## 使用シーン
 
 - AWS CLIでMFA認証が必要な環境での作業
-- CI/CDパイプラインでのAWS認証
 - 複数のAWSアカウントの管理
 - 1Passwordとの連携によるセキュアな認証
 - アプリケーションコードでのMFA認証付きAWS利用
@@ -63,10 +62,10 @@ chmod +x ~/.aws/mfacat.sh
 
 ```bash
 # 基本的な使用方法（6桁のMFAトークンを直接指定）
-~/.aws/mfacat.sh --profile myprofile --token 123456 --serial_number arn:aws:iam::123456789012:mfa/user
+~/.aws/mfacat.sh --profile myprofile --access-key-id AKIA... --secret-access-key ... --token 123456 --serial_number arn:aws:iam::123456789012:mfa/user
 
 # 1PasswordからOTPを取得する場合
-~/.aws/mfacat.sh --profile myprofile --op "AWS | MyAccount" --serial_number arn:aws:iam::123456789012:mfa/user
+~/.aws/mfacat.sh --profile myprofile --access-key-id AKIA... --secret-access-key ... --op "AWS | MyAccount" --serial_number arn:aws:iam::123456789012:mfa/user
 
 # ヘルプを表示
 ~/.aws/mfacat.sh --help
@@ -129,17 +128,17 @@ credential_process = ~/.aws/mfacat.sh --profile myprofile --op "AWS | MyAccount"
 ### 設定例
 
 ```ini
-# 1Passwordを使用する場合
+# 認証情報を直接指定して1Passwordを使用する場合
 [profile production]
 region = ap-northeast-1
 output = json
-credential_process = ~/.aws/mfacat.sh --profile production --op "AWS | Production" --serial_number arn:aws:iam::123456789012:mfa/user
+credential_process = ~/.aws/mfacat.sh --profile production --access-key-id AKIA... --secret-access-key ... --op "AWS | Production" --serial_number arn:aws:iam::123456789012:mfa/user
 
-# 手動でトークンを入力する場合
+# 認証情報を直接指定して手動トークンを使用する場合
 [profile staging]
 region = ap-northeast-1
 output = json
-credential_process = ~/.aws/mfacat.sh --profile staging --token 123456 --serial_number arn:aws:iam::123456789012:mfa/user
+credential_process = ~/.aws/mfacat.sh --profile staging --access-key-id AKIA... --secret-access-key ... --token 123456 --serial_number arn:aws:iam::123456789012:mfa/user
 ```
 
 ### 設定項目の説明
@@ -169,13 +168,17 @@ aws s3 ls
 
 ## オプション
 
-- `--profile`: AWSプロファイル名（デフォルト: default）
+- `--profile`: AWSプロファイル名（必須）
+- `--access-key-id`: AWS Access Key ID（必須）
+- `--secret-access-key`: AWS Secret Access Key（必須）
 - `--token`: 6桁のMFAトークン（`--op`が指定されていない場合は必須）
 - `--op`: 1Passwordのアイテム名（`--token`の代わりに使用）
 - `--serial_number`: MFAシリアル番号（必須）
 - `--help`: ヘルプを表示
 
-**注意**: `--token`と`--op`は同時に指定できません。どちらか一方を指定してください。
+**注意**: 
+- `--token`と`--op`は同時に指定できません。どちらか一方を指定してください。
+- `--access-key-id`と`--secret-access-key`と`--profile`は必須です。
 
 ## 設定ファイル
 
@@ -195,6 +198,7 @@ expiration = "2025-07-01T03:53:42Z"
 - **認証情報のキャッシュ**: 有効期限内は再認証不要（`~/.aws/mfacat`に保存）
 - **1Passwordとの連携**: `--op`オプションで1PasswordからOTPを自動取得
 - **6桁MFAトークンの直接指定**: `--token`オプションで手動入力
+- **認証情報の直接指定**: `--access-key-id`と`--secret-access-key`でプロファイルに依存しない認証
 - **JSON形式での出力**: 他のツールとの連携が容易
 - **自動認証設定**: `~/.aws/config`での`credential_process`設定により、AWS CLIやSDKでの自動認証
 
