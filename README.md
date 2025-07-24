@@ -58,25 +58,25 @@ cp mfacat.sh ~/.aws/mfacat.sh
 chmod +x ~/.aws/mfacat.sh
 ```
 
-**注意**: インストール後は `~/.aws/mfacat.sh` として実行してください。
+インストール後は `~/.aws/mfacat.sh` として実行できます。
 
 ## 使用方法
 
 ```bash
 # 基本的な使用方法（1PasswordからOTPを取得）
-~/.aws/mfacat.sh --profile myprofile --access-key-id AKIA... --secret-access-key ... --op "AWS | MyAccount" --serial_number arn:aws:iam::123456789012:mfa/user
+/path/to/.aws/mfacat.sh --profile myprofile --access-key-id AKIA... --secret-access-key ... --op "AWS | MyAccount" --serial_number arn:aws:iam::123456789012:mfa/user
 
 # MFAトークンをダイアログから取得する場合（macOSのみ対応）
-~/.aws/mfacat.sh --profile myprofile --access-key-id AKIA... --secret-access-key ... --token --serial_number arn:aws:iam::123456789012:mfa/user
+/path/to/.aws/mfacat.sh --profile myprofile --access-key-id AKIA... --secret-access-key ... --token --serial_number arn:aws:iam::123456789012:mfa/user
 
 # 6桁のMFAトークンを直接指定する場合
-~/.aws/mfacat.sh --profile myprofile --access-key-id AKIA... --secret-access-key ... --token 123456 --serial_number arn:aws:iam::123456789012:mfa/user
+/path/to/.aws/mfacat.sh --profile myprofile --access-key-id AKIA... --secret-access-key ... --token 123456 --serial_number arn:aws:iam::123456789012:mfa/user
 
 # ヘルプを表示
-~/.aws/mfacat.sh --help
+/path/to/.aws/mfacat.sh --help
 ```
 
-**注意**: `make setup`でインストールした場合、`~/.aws/mfacat.sh`として実行できます。
+
 
 **MFAトークンをダイアログから取得する場合（macOSのみ対応）のユーザーのアクション**:
 1. コマンドを実行すると、macOSのシステムダイアログが表示されます
@@ -89,42 +89,17 @@ chmod +x ~/.aws/mfacat.sh
 
 ## 自動認証設定（推奨）
 
-このツールの最大の利点は、`~/.aws/config`に設定することで、認証情報の管理を自動化できることです。
+`~/.aws/config`に設定することで、認証情報の管理を自動化できることです。
 
 **重要**: このツールでは`~/.aws/credentials`ファイルへの設定は不要です。`~/.aws/config`のみに設定してください。
-
-### 従来の方法の問題点
-
-従来は以下の手順が必要でした：
-
-1. `aws sts get-session-token`を実行
-2. 取得した認証情報を`~/.aws/credentials`に手動で書き込み
-3. セッショントークンの有効期限（通常1時間）が切れるたびに上記を繰り返し
-
-### このツールによる解決
-
-`~/.aws/config`に以下のように設定することで、認証情報の取得・更新を自動化できます：
-
-```ini
-[profile myprofile]
-region = ap-northeast-1
-output = json
-credential_process = ~/.aws/mfacat.sh --profile myprofile --op "AWS | MyAccount" --serial_number arn:aws:iam::123456789012:mfa/user
-```
-
-### 設定後の利点
-
-- **AWS CLI**: `aws s3 ls --profile myprofile`のように、通常通りコマンドを実行
-- **アプリケーションコード**: AWS SDKが自動的に認証情報を取得・更新
-- **認証情報の管理**: ユーザーが意識する必要なし
-- **セキュリティ**: 1Passwordとの連携でOTPを自動取得（推奨）、またはmacOSダイアログで安全なトークン入力（macOSのみ対応）
-  - macOSダイアログでは、トークンがコマンドライン履歴に残らないため、より安全
-- **ユーザビリティ**: 有効期限内のキャッシュがある場合はダイアログが表示されない
 
 ### 設定方法
 
 **設定するファイル**: `~/.aws/config`のみ
 **設定不要なファイル**: `~/.aws/credentials`（このファイルには何も設定しないでください）
+
+`~/.aws/config`に設定する際は絶対パス（macOSの場合は`/User/xxxx/.aws/config`）で設定してください
+
 
 1. **`~/.aws/config`ファイルを編集**
    ```bash
@@ -143,7 +118,7 @@ credential_process = ~/.aws/mfacat.sh --profile myprofile --op "AWS | MyAccount"
    [profile myprofile]
    region = ap-northeast-1
    output = json
-   credential_process = ~/.aws/mfacat.sh --profile myprofile --op "AWS | MyAccount" --serial_number arn:aws:iam::123456789012:mfa/user
+   credential_process = /path/to/.aws/mfacat.sh --profile myprofile --op "AWS | MyAccount" --serial_number arn:aws:iam::123456789012:mfa/user
    ```
 
 **注意**: `~/.aws/credentials`ファイルには認証情報を設定しないでください。このツールが自動的に認証情報を管理します。
@@ -187,6 +162,7 @@ credential_process = ~/.aws/mfacat.sh --profile staging --access-key-id AKIA... 
 ~/.aws/
 ├── config          ← ここに設定（必須）
 ├── credentials     ← 設定不要（このツールが自動管理）
+├── mfacat          ← 生成・設定不要（このツールが自動管理）
 └── mfacat.sh       ← このツールの実行ファイル
 ```
 
@@ -204,7 +180,6 @@ aws s3 ls
 
 ### 注意事項
 
-- `credential_process`で指定するコマンドは、JSON形式で認証情報を出力する必要があります
 - 1Passwordを使用する場合は、事前に`op signin`でログインしておく必要があります
 - MFAシリアル番号は、AWS IAMコンソールの「セキュリティ認証情報」から確認できます
 - macOSダイアログ機能はmacOSでのみ利用可能です
